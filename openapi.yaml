@@ -1,0 +1,751 @@
+openapi: 3.1.0
+info:
+  title: Nebron Voice Service
+  description: 1:1 Voice Call Orchestration, WebRTC Signaling Control Plane, and LiveKit Integration for Nebron
+  version: 1.0.0
+servers:
+  - url: http://localhost:4004
+    description: Local development server
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Service health and readiness check
+      description: Returns health status of ScyllaDB, Redis, JWKS cache, and LiveKit room service connectivity.
+      responses:
+        '200':
+          description: Core dependencies (Scylla, Redis, JWKS) are healthy (LiveKit degraded is accepted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: One or more critical dependencies (Scylla or Redis) are down
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /calls:
+    post:
+      tags:
+        - Calls
+      summary: Initiate a 1:1 voice call
+      description: |
+        Initiates a new 1:1 voice call to a peer user. Enforces block/mute rules via `core-backend`
+        and active call concurrency checks. Pushes `call.ringing` signal to callee and `call.dialing` to caller.
+        Rate limit: 10 requests / min.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartCallRequest'
+      responses:
+        '201':
+          description: Call created and entered ringing state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Call'
+        '400':
+          description: Invalid payload or cannot call self
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Blocked by callee or calls muted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Caller or callee already in an active call
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Relationship check service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags:
+        - Calls
+      summary: List user call history
+      description: |
+        Retrieves paginated history of past calls where the authenticated user was either the caller or callee,
+        sorted descending by created_at.
+        Rate limit: 60 requests / min.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 100
+          description: Maximum number of calls to return
+        - in: query
+          name: before
+          schema:
+            type: string
+            format: date-time
+          description: Filter calls created before this ISO 8601 timestamp for pagination
+      responses:
+        '200':
+          description: Paginated call history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCallsResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /calls/active:
+    get:
+      tags:
+        - Calls
+      summary: Get user's current active call
+      description: |
+        Retrieves the active call ('ringing' or 'accepted') if the authenticated user is currently in one.
+        Returns 204 No Content if no active call exists.
+        Rate limit: 120 requests / min.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active call found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Call'
+        '204':
+          description: No active call in progress
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /calls/{id}:
+    get:
+      tags:
+        - Calls
+      summary: Get call details by ID
+      description: |
+        Returns call metadata and peer status. Only callable by participants (caller or callee).
+        Rate limit: 120 requests / min.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Call UUID
+      responses:
+        '200':
+          description: Call details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetCallResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not a participant in this call
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Call not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /calls/{id}/accept:
+    post:
+      tags:
+        - Calls
+      summary: Accept an incoming ringing call
+      description: |
+        Accepts a call in ringing state (callee only). Transitions call to 'accepted', issues LiveKit
+        access tokens for both parties, and pushes signaling events via WebSocket.
+        Rate limit: 20 requests / min.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Call UUID
+      responses:
+        '200':
+          description: Call accepted, tokens and room URL returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptCallResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller not callee or caller blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Call not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Invalid state transition (not ringing)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /calls/{id}/reject:
+    post:
+      tags:
+        - Calls
+      summary: Reject an incoming ringing call
+      description: |
+        Rejects an incoming ringing call (callee only). Transitions call to 'rejected', records reason,
+        and notifies caller via WebSocket signal.
+        Rate limit: 20 requests / min.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Call UUID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectCallRequest'
+      responses:
+        '200':
+          description: Call rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Call'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller is not the callee
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Call not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Invalid state transition (not ringing)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /calls/{id}/end:
+    post:
+      tags:
+        - Calls
+      summary: End or cancel a call
+      description: |
+        Ends an active call or cancels an outbound ringing call. Callable by either participant.
+        - If caller hangs up while ringing -> state='cancelled'
+        - If callee hangs up while ringing -> state='rejected' (reason='hangup')
+        - If call is accepted -> state='ended'
+        Rate limit: 30 requests / min.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Call UUID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EndCallRequest'
+      responses:
+        '200':
+          description: Call ended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Call'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not a participant in this call
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Call not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Invalid state transition (call already terminated)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /calls/{id}/tokens:
+    post:
+      tags:
+        - Calls
+      summary: Obtain fresh LiveKit access token
+      description: |
+        Generates a fresh LiveKit access token for reconnects during an accepted call.
+        Callable only by participants while the call remains in 'accepted' state.
+        Rate limit: 10 requests / min.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Call UUID
+      responses:
+        '200':
+          description: Fresh token generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshTokenResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not a participant in this call
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Call not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Call is not in accepted state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /webhooks/livekit:
+    post:
+      tags:
+        - Webhooks
+      summary: LiveKit server webhook event receiver
+      description: |
+        Receives and verifies WebRTC room and participant lifecycle events directly from LiveKit server.
+        Authenticates via LiveKit sha256 body checksum JWT in the `Authorization` header.
+        Automatically force-ends dead or abandoned calls upon `room_finished` or when all participants disconnect (`participant_left`).
+      requestBody:
+        required: true
+        content:
+          application/webhook+json:
+            schema:
+              type: object
+              additionalProperties: true
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Event received and processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '401':
+          description: Missing or invalid webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /calls/{id}/debug:
+    get:
+      tags:
+        - Calls
+      summary: Internal call state and LiveKit diagnostic inspection
+      description: |
+        Inspects call record state from ScyllaDB and compares against live WebRTC room state in LiveKit to detect state divergence (e.g. stuck calls or orphan rooms).
+        Protected by `X-Internal-Token` header.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Call UUID
+        - in: header
+          name: x-internal-token
+          required: true
+          schema:
+            type: string
+          description: Internal service authentication secret
+      responses:
+        '200':
+          description: Call debug information and divergence diagnosis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallDebugResponse'
+        '401':
+          description: Missing or invalid internal token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Call not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Internal token not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    CallState:
+      type: string
+      enum:
+        - ringing
+        - accepted
+        - rejected
+        - cancelled
+        - missed
+        - ended
+        - error
+      description: State of the call lifecycle
+
+    Call:
+      type: object
+      required:
+        - id
+        - callerId
+        - calleeId
+        - state
+        - roomName
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique call identifier
+        callerId:
+          type: string
+          format: uuid
+          description: User ID of the call initiator
+        calleeId:
+          type: string
+          format: uuid
+          description: User ID of the call recipient
+        state:
+          $ref: '#/components/schemas/CallState'
+        roomName:
+          type: string
+          description: LiveKit room name (corresponds to call id)
+        createdAt:
+          type: string
+          format: date-time
+        acceptedAt:
+          type: string
+          format: date-time
+          nullable: true
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        endedBy:
+          type: string
+          format: uuid
+          nullable: true
+        endReason:
+          type: string
+          nullable: true
+          description: Reason for termination ('hangup', 'reject', 'missed', 'cancelled', 'error', 'livekit_closed')
+
+    StartCallRequest:
+      type: object
+      required:
+        - calleeId
+      properties:
+        calleeId:
+          type: string
+          format: uuid
+          description: User ID of the person to call
+
+    AcceptCallResponse:
+      type: object
+      required:
+        - call
+        - callerToken
+        - calleeToken
+        - livekitUrl
+      properties:
+        call:
+          $ref: '#/components/schemas/Call'
+        callerToken:
+          type: string
+          description: LiveKit room token for the caller
+        calleeToken:
+          type: string
+          description: LiveKit room token for the callee
+        livekitUrl:
+          type: string
+          description: WebRTC WebSocket URL for LiveKit server
+
+    RejectCallRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 80
+          default: reject
+          description: Optional rejection reason code (e.g. 'busy', 'reject')
+
+    EndCallRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 80
+          default: hangup
+          description: Optional termination reason code
+
+    GetCallResponse:
+      allOf:
+        - $ref: '#/components/schemas/Call'
+        - type: object
+          properties:
+            peer:
+              type: object
+              required:
+                - userId
+                - role
+                - state
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                role:
+                  type: string
+                  enum: [caller, callee]
+                state:
+                  type: string
+            peerStatus:
+              type: string
+              enum: [online, offline]
+              nullable: true
+
+    RefreshTokenResponse:
+      type: object
+      required:
+        - token
+        - livekitUrl
+        - roomName
+      properties:
+        token:
+          type: string
+          description: Fresh LiveKit access token
+        livekitUrl:
+          type: string
+          description: LiveKit WebSocket server URL
+        roomName:
+          type: string
+          description: LiveKit room identifier
+
+    ListCallsResponse:
+      type: object
+      required:
+        - calls
+      properties:
+        calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/Call'
+        nextCursor:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO timestamp cursor for paginating older calls
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - scylla
+        - redis
+        - jwks
+        - livekit
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        scylla:
+          type: string
+          enum: [ok, down]
+        redis:
+          type: string
+          enum: [ok, down]
+        jwks:
+          type: string
+          enum: [ok, stale]
+        livekit:
+          type: string
+          enum: [ok, degraded]
+        version:
+          type: string
+
+    CallDebugResponse:
+      type: object
+      required:
+        - call
+        - livekit
+        - divergence
+      properties:
+        call:
+          $ref: '#/components/schemas/Call'
+        livekit:
+          type: object
+          required:
+            - roomExists
+            - participantCount
+            - participants
+          properties:
+            roomExists:
+              type: boolean
+            participantCount:
+              type: integer
+            participants:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            error:
+              type: string
+        divergence:
+          type: string
+          enum: [none, stuck_call, orphan_room]
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+            message:
+              type: string
+              description: Human-readable error description

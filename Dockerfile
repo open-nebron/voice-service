@@ -1,46 +1,48 @@
-# Multi-stage Dockerfile for Zenuxs voice-service
-
-# Stage 1: Build TypeScript source
-FROM node:20-alpine AS builder
+# Stage 1 — build:
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Copy dependency manifests
-COPY package*.json tsconfig.json ./
+# Copy package manifests and vendored contracts
+COPY package*.json ./
+COPY vendor/ ./vendor/
 
 # Install all dependencies
-RUN npm install
+RUN npm ci
 
-# Copy source code
+# Copy tsconfig and sources
+COPY tsconfig.json ./
 COPY src/ ./src/
 
 # Compile TypeScript
 RUN npm run build
 
-# Stage for dev mode target
-FROM builder AS build
+# Stage 2 — runtime:
+FROM node:20-alpine
 
-# Stage 2: Production runner
-FROM node:20-alpine AS runner
+# Non-root user (uid 1001)
+RUN addgroup -g 1001 -S nebron && \
+    adduser -u 1001 -S nebron -G nebron
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=4004
 
-# Copy package manifests and install only production dependencies
-COPY package*.json ./
-RUN npm install --omit=dev && npm cache clean --force
+# Copy package manifests and vendored contracts for production pruning
+COPY --chown=nebron:nebron package*.json ./
+COPY --chown=nebron:nebron vendor/ ./vendor/
+COPY --chown=nebron:nebron --from=build /app/node_modules ./node_modules
+RUN npm prune --omit=dev && rm -rf vendor
 
-# Copy compiled files from builder
-COPY --from=builder /app/dist ./dist
+# Copy compiled artifacts
+COPY --chown=nebron:nebron --from=build /app/dist ./dist
 
-# Use non-root node user
-USER node
+USER nebron
 
 EXPOSE 4004
 
-HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:4004/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:4004/health || exit 1
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/server.js"]
