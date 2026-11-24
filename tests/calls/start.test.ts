@@ -214,4 +214,35 @@ describe('POST /calls (startCall)', () => {
     expect(event.payload.callerId).toBe(userE1);
     expect(event.payload.calleeId).toBe(userE2);
   });
+
+  // 9. MongoDB ObjectId (24-hex chars) caller and callee
+  it('supports 24-hex MongoDB ObjectId user IDs', async () => {
+    const callerId = '6b05523f0e785a20e6ca6522';
+    const calleeId = '6b05523f0e785a20e6ca6523';
+    const callerToken = await createTestToken(callerId);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/calls',
+      headers: { authorization: `Bearer ${callerToken}` },
+      payload: { calleeId },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.callerId).toBe(callerId);
+    expect(body.calleeId).toBe(calleeId);
+    expect(body.state).toBe('ringing');
+
+    // Verify GET /calls/active works with ObjectId
+    const activeRes = await app.inject({
+      method: 'GET',
+      url: '/calls/active',
+      headers: { authorization: `Bearer ${callerToken}` },
+    });
+    expect(activeRes.statusCode).toBe(200);
+    expect(activeRes.json().id).toBe(body.id);
+    expect(activeRes.json().callerId).toBe(callerId);
+    expect(activeRes.json().calleeId).toBe(calleeId);
+  });
 });

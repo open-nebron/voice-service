@@ -1,10 +1,10 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ID_REGEX = /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|[0-9a-fA-F]{24})$/i;
 
 const StartCallBodySchema = z.object({
-  calleeId: z.string().regex(UUID_REGEX, 'calleeId must be a valid UUID'),
+  calleeId: z.string().regex(ID_REGEX, 'calleeId must be a valid UUID or ObjectId'),
 });
 
 const RejectCallBodySchema = z.object({
@@ -36,7 +36,6 @@ export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
           properties: {
             calleeId: {
               type: 'string',
-              format: 'uuid',
               description: 'Target peer user ID to call',
             },
           },

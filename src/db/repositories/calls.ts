@@ -1,5 +1,7 @@
-import type cassandra from 'cassandra-driver';
+import cassandra from 'cassandra-driver';
 import type { CallState, CallEndReason } from '../../modules/calls/state-machine.js';
+import { toCassandraUuid, fromCassandraUuid } from '../../lib/id.js';
+import { validate as uuidValidate } from 'uuid';
 
 export interface Call {
   id: string;
@@ -31,7 +33,6 @@ export interface UpdateCallStateParams {
   endReason?: CallEndReason | string | null;
 }
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class CallsRepository {
   private readonly client: cassandra.Client;
@@ -43,14 +44,14 @@ export class CallsRepository {
   private mapRowToCall(row: cassandra.types.Row): Call {
     return {
       id: row.id.toString(),
-      callerId: row.caller_id.toString(),
-      calleeId: row.callee_id.toString(),
+      callerId: fromCassandraUuid(row.caller_id),
+      calleeId: fromCassandraUuid(row.callee_id),
       state: row.state as CallState,
       roomName: row.room_name,
       createdAt: row.created_at,
       acceptedAt: row.accepted_at || null,
       endedAt: row.ended_at || null,
-      endedBy: row.ended_by ? row.ended_by.toString() : null,
+      endedBy: row.ended_by ? fromCassandraUuid(row.ended_by) : null,
       endReason: row.end_reason || null,
     };
   }
@@ -63,7 +64,14 @@ export class CallsRepository {
     `;
     await this.client.execute(
       query,
-      [params.id, params.callerId, params.calleeId, state, params.roomName, params.createdAt],
+      [
+        toCassandraUuid(params.id),
+        toCassandraUuid(params.callerId),
+        toCassandraUuid(params.calleeId),
+        state,
+        params.roomName,
+        params.createdAt,
+      ],
       { prepare: true }
     );
 
@@ -82,11 +90,15 @@ export class CallsRepository {
   }
 
   async getById(id: string): Promise<Call | null> {
-    if (!UUID_REGEX.test(id)) {
+    if (!uuidValidate(id)) {
       return null;
     }
     const query = `SELECT * FROM calls WHERE id = ?`;
-    const result = await this.client.execute(query, [id], { prepare: true });
+    const result = await this.client.execute(
+      query,
+      [toCassandraUuid(id)],
+      { prepare: true }
+    );
     if (!result.rows || result.rows.length === 0) {
       return null;
     }
@@ -111,32 +123,34 @@ export class CallsRepository {
     }
     if (patch.endedBy !== undefined) {
       fields.push('ended_by = ?');
-      params.push(patch.endedBy);
+      params.push(patch.endedBy ? toCassandraUuid(patch.endedBy) : null);
     }
     if (patch.endReason !== undefined) {
       fields.push('end_reason = ?');
       params.push(patch.endReason);
     }
 
-    params.push(id);
+    params.push(toCassandraUuid(id));
     const query = `UPDATE calls SET ${fields.join(', ')} WHERE id = ?`;
     await this.client.execute(query, params, { prepare: true });
   }
 
   async findRingingByCallee(calleeId: string): Promise<Call[]> {
+    const calleeUuid = toCassandraUuid(calleeId);
     const query = `SELECT * FROM calls WHERE callee_id = ? AND state = 'ringing' ALLOW FILTERING`;
-    const result = await this.client.execute(query, [calleeId], { prepare: true });
+    const result = await this.client.execute(query, [calleeUuid], { prepare: true });
     if (!result.rows) return [];
     return result.rows.map((r) => this.mapRowToCall(r));
   }
 
   async findActiveByUser(userId: string): Promise<Call | null> {
+    const userUuid = toCassandraUuid(userId);
     // Check if user is caller or callee in active states (ringing or accepted)
     const [callerRes, calleeRes] = await Promise.all([
-      this.client.execute(`SELECT * FROM calls WHERE caller_id = ? ALLOW FILTERING`, [userId], {
+      this.client.execute(`SELECT * FROM calls WHERE caller_id = ? ALLOW FILTERING`, [userUuid], {
         prepare: true,
       }),
-      this.client.execute(`SELECT * FROM calls WHERE callee_id = ? ALLOW FILTERING`, [userId], {
+      this.client.execute(`SELECT * FROM calls WHERE callee_id = ? ALLOW FILTERING`, [userUuid], {
         prepare: true,
       }),
     ]);
@@ -151,9 +165,10 @@ export class CallsRepository {
   }
 
   async listForUser(userId: string, limit = 30, before?: Date | string): Promise<Call[]> {
+    const userUuid = toCassandraUuid(userId);
     const [callerRes, calleeRes] = await Promise.all([
-      this.client.execute(`SELECT * FROM calls WHERE caller_id = ?`, [userId], { prepare: true }),
-      this.client.execute(`SELECT * FROM calls WHERE callee_id = ?`, [userId], { prepare: true }),
+      this.client.execute(`SELECT * FROM calls WHERE caller_id = ?`, [userUuid], { prepare: true }),
+      this.client.execute(`SELECT * FROM calls WHERE callee_id = ?`, [userUuid], { prepare: true }),
     ]);
 
     const seenIds = new Set<string>();
@@ -198,7 +213,11 @@ export class CallsRepository {
       UPDATE calls SET state = 'missed', ended_at = ?, end_reason = 'missed'
       WHERE id = ? IF state = 'ringing'
     `;
-    const result = await this.client.execute(query, [endedAt, id], { prepare: true });
+    const result = await this.client.execute(
+      query,
+      [endedAt, toCassandraUuid(id)],
+      { prepare: true }
+    );
     return result.wasApplied ? result.wasApplied() : true;
   }
 
@@ -230,7 +249,11 @@ export class CallsRepository {
       UPDATE calls SET state = 'ended', ended_at = ?, ended_by = null, end_reason = ?
       WHERE id = ? IF state = 'accepted'
     `;
-    const result = await this.client.execute(query, [endedAt, reason, id], { prepare: true });
+    const result = await this.client.execute(
+      query,
+      [endedAt, reason, toCassandraUuid(id)],
+      { prepare: true }
+    );
     return result.wasApplied ? result.wasApplied() : true;
   }
 }
