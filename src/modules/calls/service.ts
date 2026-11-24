@@ -311,7 +311,7 @@ export class CallsService {
         payload: {
           callId,
           callerToken,
-          livekitUrl: this.config.LIVEKIT_URL,
+          livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
           roomName: call.roomName,
         },
       })
@@ -324,7 +324,7 @@ export class CallsService {
         payload: {
           callId,
           calleeToken,
-          livekitUrl: this.config.LIVEKIT_URL,
+          livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
           roomName: call.roomName,
         },
       })
@@ -340,7 +340,7 @@ export class CallsService {
       call: updatedCall,
       callerToken,
       calleeToken,
-      livekitUrl: this.config.LIVEKIT_URL,
+      livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
     };
   }
 
@@ -619,7 +619,7 @@ export class CallsService {
 
       return {
         token,
-        livekitUrl: this.config.LIVEKIT_URL,
+        livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
         roomName: call.roomName,
       };
     } catch {

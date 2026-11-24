@@ -344,6 +344,7 @@ export async function createRealTestApp(
     JWT_ISSUER: 'nebron-auth',
     JWT_AUDIENCE: 'voice',
     LIVEKIT_URL: 'ws://127.0.0.1:7880',
+    LIVEKIT_PUBLIC_URL: 'ws://127.0.0.1:7880',
     LIVEKIT_HTTP_URL: 'http://127.0.0.1:7880',
     LIVEKIT_API_KEY: 'test-api-key',
     LIVEKIT_API_SECRET: 'test-api-secret',

@@ -30,6 +30,13 @@ export const configSchema = z.object({
       invalid_type_error: 'LIVEKIT_URL must be a string',
     })
     .min(1, 'LIVEKIT_URL is required'),
+  LIVEKIT_PUBLIC_URL: z
+    .string({
+      required_error: 'LIVEKIT_PUBLIC_URL is required',
+      invalid_type_error: 'LIVEKIT_PUBLIC_URL must be a string',
+    })
+    .min(1, 'LIVEKIT_PUBLIC_URL is required')
+    .default('ws://localhost:7880'),
   LIVEKIT_HTTP_URL: z
     .string({
       required_error: 'LIVEKIT_HTTP_URL is required',

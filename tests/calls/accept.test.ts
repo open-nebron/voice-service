@@ -28,6 +28,8 @@ describe('POST /calls/:id/accept (acceptCall)', () => {
       CORE_URL: mockCore.url,
       LIVEKIT_API_KEY: 'test-api-key',
       LIVEKIT_API_SECRET: 'test-api-secret',
+      LIVEKIT_URL: 'ws://livekit-internal:7880',
+      LIVEKIT_PUBLIC_URL: 'ws://127.0.0.1:7880',
     });
     app = testApp.app;
     redis = testApp.redis;
@@ -214,5 +216,23 @@ describe('POST /calls/:id/accept (acceptCall)', () => {
 
     expect((callerClaims.video as any).room).toBe((calleeClaims.video as any).room);
     expect((callerClaims.video as any).room).toBe(call.roomName);
+  });
+
+  // 8. acceptCall returns livekitUrl === config.LIVEKIT_PUBLIC_URL and != config.LIVEKIT_URL
+  it('acceptCall returns livekitUrl === config.LIVEKIT_PUBLIC_URL (and != LIVEKIT_URL when differing)', async () => {
+    const { call, calleeToken } = await createRingingCall();
+
+    const acceptRes = await app.inject({
+      method: 'POST',
+      url: `/calls/${call.id}/accept`,
+      headers: { authorization: `Bearer ${calleeToken}` },
+    });
+
+    expect(acceptRes.statusCode).toBe(200);
+    const body = acceptRes.json();
+    expect(body.livekitUrl).toBe(app.config.LIVEKIT_PUBLIC_URL);
+    expect(body.livekitUrl).not.toBe(app.config.LIVEKIT_URL);
+    expect(body.livekitUrl).toBe('ws://127.0.0.1:7880');
+    expect(app.config.LIVEKIT_URL).toBe('ws://livekit-internal:7880');
   });
 });
