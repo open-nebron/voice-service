@@ -9,6 +9,7 @@ import { loggingPlugin } from './plugins/logging.js';
 import { docsPlugin } from './plugins/docs.js';
 import { runMigrations } from './db/migrate.js';
 import { CallsRepository } from './db/repositories/calls.js';
+import { CallParticipantsRepository } from './db/repositories/call-participants.js';
 import { EventsPublisher } from './modules/events/publisher.js';
 import { CallsService } from './modules/calls/service.js';
 import { CallTimeoutJob } from './jobs/call-timeout.js';
@@ -24,6 +25,7 @@ declare module 'fastify' {
   interface FastifyInstance {
     config: Config;
     callsRepo: CallsRepository;
+    callParticipantsRepo: CallParticipantsRepository;
     eventsPublisher: EventsPublisher;
     callsService: CallsService;
     callTimeoutJob: CallTimeoutJob;
@@ -107,12 +109,14 @@ export async function buildApp(
 
   // Register repositories & services
   const callsRepo = new CallsRepository(app.scylla);
+  const callParticipantsRepo = new CallParticipantsRepository(app.scylla);
   const eventsPublisher = new EventsPublisher(app.redis, cfg.EVENTS_STREAM);
   const callsService =
     options.callsService ||
-    new CallsService(callsRepo, app.redis, eventsPublisher, app.livekit, cfg);
+    new CallsService(callsRepo, callParticipantsRepo, app.redis, eventsPublisher, app.livekit, cfg);
 
   app.decorate('callsRepo', callsRepo);
+  app.decorate('callParticipantsRepo', callParticipantsRepo);
   app.decorate('eventsPublisher', eventsPublisher);
   app.decorate('callsService', callsService);
 
@@ -165,20 +169,20 @@ export async function buildApp(
 
   // Standardized error envelopes
   app.setErrorHandler((error: any, _request, reply) => {
-    if (error.statusCode === 429) {
-      return reply.status(429).send({
-        error: {
-          code: 'rate_limit_exceeded',
-          message: error.message || 'Rate limit exceeded, retry later',
-        },
-      });
-    }
-
     if (error instanceof AppError) {
       return reply.status(error.statusCode).send({
         error: {
           code: error.code,
           message: error.message,
+        },
+      });
+    }
+
+    if (error.statusCode === 429) {
+      return reply.status(429).send({
+        error: {
+          code: 'rate_limit_exceeded',
+          message: error.message || 'Rate limit exceeded, retry later',
         },
       });
     }

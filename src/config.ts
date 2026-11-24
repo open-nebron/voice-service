@@ -56,6 +56,8 @@ export const configSchema = z.object({
     })
     .min(1, 'LIVEKIT_API_SECRET is required'),
   CORE_URL: z.string().default('http://core:4002'),
+  CHAT_URL: z.string().default('http://chat:4003'),
+  MAX_GROUP_CALL_PARTICIPANTS: z.coerce.number().int().positive().default(10),
   INTERNAL_TOKEN: z
     .string({
       required_error: 'INTERNAL_TOKEN is required',

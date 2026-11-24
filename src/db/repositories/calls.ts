@@ -15,6 +15,9 @@ export interface Call {
   endedBy?: string | null;
   endReason?: CallEndReason | string | null;
   mode?: 'audio' | 'video' | null;
+  conversationId?: string | null;
+  hostId?: string | null;
+  participants?: string[];
 }
 
 export interface InsertCallParams {
@@ -25,6 +28,8 @@ export interface InsertCallParams {
   createdAt: Date;
   state?: CallState;
   mode?: 'audio' | 'video';
+  conversationId?: string | null;
+  hostId?: string | null;
 }
 
 export interface UpdateCallStateParams {
@@ -56,6 +61,8 @@ export class CallsRepository {
       endedBy: row.ended_by ? fromCassandraUuid(row.ended_by) : null,
       endReason: row.end_reason || null,
       mode: (row.mode as 'audio' | 'video') || 'audio',
+      conversationId: row.conversation_id ? fromCassandraUuid(row.conversation_id) : null,
+      hostId: row.host_id ? fromCassandraUuid(row.host_id) : null,
     };
   }
 
@@ -63,8 +70,8 @@ export class CallsRepository {
     const state = params.state || 'ringing';
     const mode = params.mode || 'audio';
     const query = `
-      INSERT INTO calls (id, caller_id, callee_id, state, room_name, created_at, mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO calls (id, caller_id, callee_id, state, room_name, created_at, mode, conversation_id, host_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     await this.client.execute(
       query,
@@ -76,6 +83,8 @@ export class CallsRepository {
         params.roomName,
         params.createdAt,
         mode,
+        params.conversationId ? toCassandraUuid(params.conversationId) : null,
+        params.hostId ? toCassandraUuid(params.hostId) : null,
       ],
       { prepare: true }
     );
@@ -92,6 +101,8 @@ export class CallsRepository {
       endedBy: null,
       endReason: null,
       mode,
+      conversationId: params.conversationId || null,
+      hostId: params.hostId || null,
     };
   }
 
@@ -139,6 +150,29 @@ export class CallsRepository {
     params.push(toCassandraUuid(id));
     const query = `UPDATE calls SET ${fields.join(', ')} WHERE id = ?`;
     await this.client.execute(query, params, { prepare: true });
+  }
+
+  async findByConversation(conversationId: string, state?: string): Promise<Call | null> {
+    if (!uuidValidate(conversationId)) {
+      return null;
+    }
+    const convUuid = toCassandraUuid(conversationId);
+    const query = `SELECT * FROM calls WHERE conversation_id = ? ALLOW FILTERING`;
+    const result = await this.client.execute(query, [convUuid], { prepare: true });
+    if (!result.rows || result.rows.length === 0) {
+      return null;
+    }
+    const calls = result.rows.map((r) => this.mapRowToCall(r));
+    if (state === 'active') {
+      return calls.find((c) => c.state === 'ringing' || c.state === 'accepted') || null;
+    }
+    if (state) {
+      return calls.find((c) => c.state === state) || null;
+    }
+    const active = calls.find((c) => c.state === 'ringing' || c.state === 'accepted');
+    if (active) return active;
+    calls.sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+    return calls[0] || null;
   }
 
   async findRingingByCallee(calleeId: string): Promise<Call[]> {

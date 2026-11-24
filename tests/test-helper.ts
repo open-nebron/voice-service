@@ -174,6 +174,95 @@ export function startMockCoreServer(port = 0): Promise<MockCoreServer> {
   });
 }
 
+export interface MockChatServer {
+  url: string;
+  setMember(
+    conversationId: string,
+    userId: string,
+    isMember: boolean,
+    kind?: string,
+    role?: string
+  ): void;
+  setConversationNotFound(conversationId: string, notFound: boolean): void;
+  setStatusCode(code: number | null): void;
+  getLastAuthHeader(): string | null;
+  reset(): void;
+  close(): Promise<void>;
+}
+
+export function startMockChatServer(port = 0): Promise<MockChatServer> {
+  const members = new Map<string, { isMember: boolean; kind: string; role?: string }>();
+  const notFoundConvs = new Set<string>();
+  let overrideStatusCode: number | null = null;
+  let lastAuthHeader: string | null = null;
+
+  const server = http.createServer((req, res) => {
+    lastAuthHeader = (req.headers['x-internal-token'] as string) || null;
+
+    if (overrideStatusCode !== null) {
+      res.writeHead(overrideStatusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'error', message: 'Simulated chat error' } }));
+      return;
+    }
+
+    const parsedUrl = new URL(req.url || '', 'http://127.0.0.1');
+    const memberMatch = parsedUrl.pathname.match(
+      /^\/internal\/conversations\/([^/]+)\/members\/([^/]+)$/
+    );
+    if (memberMatch) {
+      const convId = memberMatch[1]!;
+      const userId = memberMatch[2]!;
+
+      if (notFoundConvs.has(convId)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: 'not_found', message: 'Conversation not found' } }));
+        return;
+      }
+
+      const key = `${convId}:${userId}`;
+      const entry = members.get(key) || { isMember: true, kind: 'group', role: 'member' };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(entry));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  });
+
+  return new Promise((resolve) => {
+    server.listen(port, '127.0.0.1', () => {
+      const actualPort = (server.address() as AddressInfo).port;
+      resolve({
+        url: `http://127.0.0.1:${actualPort}`,
+        setMember(convId, userId, isMember, kind = 'group', role = 'member') {
+          members.set(`${convId}:${userId}`, { isMember, kind, role });
+        },
+        setConversationNotFound(convId, notFound) {
+          if (notFound) {
+            notFoundConvs.add(convId);
+          } else {
+            notFoundConvs.delete(convId);
+          }
+        },
+        setStatusCode(code) {
+          overrideStatusCode = code;
+        },
+        getLastAuthHeader() {
+          return lastAuthHeader;
+        },
+        reset() {
+          members.clear();
+          notFoundConvs.clear();
+          overrideStatusCode = null;
+          lastAuthHeader = null;
+        },
+        close: () => new Promise<void>((r) => server.close(() => r())),
+      });
+    });
+  });
+}
+
 export class SignalTracker {
   private sub: Redis;
   private messages: Array<{ channel: string; data: any }> = [];

@@ -38,16 +38,39 @@ export async function runMigrations(
         ended_by        uuid,
         end_reason      text,
         mode            text,
+        conversation_id uuid,
+        host_id         uuid,
         PRIMARY KEY (id)
       )
     `);
 
-    // Add mode column if upgrading existing table
+    // Add columns if upgrading existing table
     try {
       await client.execute(`ALTER TABLE "${keyspace}".calls ADD mode text`);
     } catch {
       // Column may already exist
     }
+    try {
+      await client.execute(`ALTER TABLE "${keyspace}".calls ADD conversation_id uuid`);
+    } catch {
+      // Column may already exist
+    }
+    try {
+      await client.execute(`ALTER TABLE "${keyspace}".calls ADD host_id uuid`);
+    } catch {
+      // Column may already exist
+    }
+
+    // call_participants table
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS "${keyspace}".call_participants (
+        call_id   uuid,
+        user_id   uuid,
+        joined_at timestamp,
+        left_at   timestamp,
+        PRIMARY KEY ((call_id), user_id)
+      )
+    `);
 
     // 3. Indexes
     await client.execute(`
@@ -58,6 +81,9 @@ export async function runMigrations(
     `);
     await client.execute(`
       CREATE INDEX IF NOT EXISTS calls_by_state ON "${keyspace}".calls (state)
+    `);
+    await client.execute(`
+      CREATE INDEX IF NOT EXISTS calls_by_conversation ON "${keyspace}".calls (conversation_id)
     `);
 
     log.info('schema migrated');

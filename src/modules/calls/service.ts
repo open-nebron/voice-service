@@ -2,9 +2,10 @@ import type { Redis } from 'ioredis';
 import crypto from 'node:crypto';
 import type { Config } from '../../config.js';
 import type { CallsRepository, Call } from '../../db/repositories/calls.js';
+import type { CallParticipantsRepository } from '../../db/repositories/call-participants.js';
 import type { EventsPublisher } from '../events/publisher.js';
 import type { LiveKitService } from '../../plugins/livekit.js';
-import type { CallEndReason } from './state-machine.js';
+import type { CallEndReason, CallState } from './state-machine.js';
 import {
   AppError,
   BadRequestError,
@@ -15,6 +16,7 @@ import {
 
 export class CallsService {
   private readonly callsRepo: CallsRepository;
+  private readonly callParticipantsRepo: CallParticipantsRepository;
   private readonly redis: Redis;
   private readonly eventsPublisher: EventsPublisher;
   private readonly livekit: LiveKitService;
@@ -22,12 +24,14 @@ export class CallsService {
 
   constructor(
     callsRepo: CallsRepository,
+    callParticipantsRepo: CallParticipantsRepository,
     redis: Redis,
     eventsPublisher: EventsPublisher,
     livekit: LiveKitService,
     config: Config
   ) {
     this.callsRepo = callsRepo;
+    this.callParticipantsRepo = callParticipantsRepo;
     this.redis = redis;
     this.eventsPublisher = eventsPublisher;
     this.livekit = livekit;
@@ -104,6 +108,41 @@ export class CallsService {
     if (json.data?.[targetUserId]?.blocked) {
       throw new ForbiddenError('blocked', 'User is blocked');
     }
+  }
+
+  async checkConversationMembership(
+    conversationId: string,
+    userId: string
+  ): Promise<{ isMember: boolean; kind: string; role?: string }> {
+    const url = new URL(`/internal/conversations/${conversationId}/members/${userId}`, this.config.CHAT_URL);
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), {
+        method: 'GET',
+        headers: {
+          'x-internal-token': this.config.INTERNAL_TOKEN,
+          'Content-Type': 'application/json',
+        },
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch {
+      throw new AppError(503, 'service_unavailable', 'Chat service unavailable');
+    }
+
+    if (response.status === 404) {
+      throw new NotFoundError('conversation_not_found', 'Conversation not found');
+    }
+
+    if (!response.ok) {
+      throw new AppError(503, 'service_unavailable', 'Chat service unavailable');
+    }
+
+    const data = (await response.json()) as { isMember: boolean; kind?: string; role?: string };
+    return {
+      isMember: Boolean(data.isMember),
+      kind: data.kind || 'group',
+      role: data.role,
+    };
   }
 
   async startCall(callerId: string, calleeId: string, mode: 'audio' | 'video' = 'audio'): Promise<Call> {
@@ -340,6 +379,32 @@ export class CallsService {
         },
       })
     );
+
+    if (call.conversationId) {
+      await this.callParticipantsRepo.add(callId, call.calleeId);
+      const atIso = acceptedAt.toISOString();
+      await this.eventsPublisher.publish({
+        type: 'voice.call.participant_joined',
+        payload: {
+          callId,
+          conversationId: call.conversationId,
+          userId: call.calleeId,
+          at: atIso,
+        },
+      });
+      await this.redis.publish(
+        `ws:conv:${call.conversationId}`,
+        JSON.stringify({
+          type: 'call.participant_joined',
+          payload: {
+            callId,
+            conversationId: call.conversationId,
+            userId: call.calleeId,
+            at: atIso,
+          },
+        })
+      );
+    }
 
     const updatedCall: Call = {
       ...call,
@@ -578,6 +643,24 @@ export class CallsService {
       throw new NotFoundError('call_not_found', 'Call not found');
     }
 
+    if (call.conversationId) {
+      const isPart = await this.callParticipantsRepo.isParticipant(callId, userId);
+      const membership = await this.checkConversationMembership(call.conversationId, userId);
+      if (!isPart && !membership.isMember) {
+        throw new ForbiddenError('not_participant', 'User is not a participant in this call');
+      }
+      const participants = await this.callParticipantsRepo.listActive(callId);
+      return {
+        ...call,
+        participants,
+        peer: {
+          userId: call.hostId || call.callerId,
+          role: 'caller',
+          state: call.state,
+        },
+      };
+    }
+
     if (userId !== call.callerId && userId !== call.calleeId) {
       throw new ForbiddenError('not_participant', 'User is not a participant in this call');
     }
@@ -604,7 +687,12 @@ export class CallsService {
       throw new NotFoundError('call_not_found', 'Call not found');
     }
 
-    if (userId !== call.callerId && userId !== call.calleeId) {
+    if (call.conversationId) {
+      const isPart = await this.callParticipantsRepo.isParticipant(callId, userId);
+      if (!isPart) {
+        throw new ForbiddenError('not_participant', 'User is not a participant in this call');
+      }
+    } else if (userId !== call.callerId && userId !== call.calleeId) {
       throw new ForbiddenError('not_participant', 'User is not a participant in this call');
     }
 
@@ -646,6 +734,450 @@ export class CallsService {
         'Voice service temporarily unavailable, please try again'
       );
     }
+  }
+
+  async startGroupCall(
+    hostId: string,
+    conversationId: string,
+    firstInviteeId?: string,
+    mode: 'audio' | 'video' = 'audio'
+  ): Promise<{
+    call: Call;
+    token: string;
+    hostToken: string;
+    livekitUrl: string;
+    roomName: string;
+  }> {
+    const livekitUp = await this.livekit.ping();
+    if (!livekitUp) {
+      throw new AppError(
+        503,
+        'livekit_unavailable',
+        'Voice service temporarily unavailable, please try again'
+      );
+    }
+
+    const hostMembership = await this.checkConversationMembership(conversationId, hostId);
+    if (!hostMembership.isMember) {
+      throw new ForbiddenError('not_member', 'User is not a member of this conversation');
+    }
+    if (hostMembership.kind !== 'group') {
+      throw new BadRequestError('invalid_conversation_type', 'Group calls can only be started in group conversations');
+    }
+
+    if (firstInviteeId) {
+      if (firstInviteeId === hostId) {
+        throw new BadRequestError('cannot_call_self', 'Cannot call yourself');
+      }
+      const inviteeMembership = await this.checkConversationMembership(conversationId, firstInviteeId);
+      if (!inviteeMembership.isMember) {
+        throw new BadRequestError('invitee_not_member', 'First invitee is not a member of this conversation');
+      }
+      await this.checkRelationships(hostId, firstInviteeId);
+    }
+
+    const existingActive = await this.callsRepo.findByConversation(conversationId, 'active');
+    if (existingActive) {
+      throw new ConflictError('call_already_active', 'An active call already exists in this conversation');
+    }
+
+    const hostActive = await this.callsRepo.findActiveByUser(hostId);
+    if (hostActive) {
+      throw new ConflictError('already_in_call', 'User is already in an active call');
+    }
+
+    const id = crypto.randomUUID();
+    const roomName = id;
+    const createdAt = new Date();
+    const state: CallState = firstInviteeId ? 'ringing' : 'accepted';
+
+    const call = await this.callsRepo.insert({
+      id,
+      callerId: hostId,
+      calleeId: firstInviteeId || hostId,
+      roomName,
+      createdAt,
+      state,
+      mode,
+      conversationId,
+      hostId,
+    });
+
+    if (state === 'accepted') {
+      await this.callsRepo.updateState(id, {
+        state: 'accepted',
+        acceptedAt: createdAt,
+      });
+      call.state = 'accepted';
+      call.acceptedAt = createdAt;
+    }
+
+    await this.callParticipantsRepo.add(id, hostId, createdAt);
+
+    const publishGrants =
+      mode === 'video'
+        ? ['microphone', 'camera', 'screen_share']
+        : ['microphone'];
+
+    const hostToken = await this.livekit.makeAccessToken({
+      identity: hostId,
+      room: roomName,
+      ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
+      grants: {
+        roomJoin: true,
+        canPublish: publishGrants,
+        canSubscribe: true,
+        room: roomName,
+      },
+    });
+
+    await this.eventsPublisher.publish({
+      type: 'voice.call.group_started',
+      payload: {
+        callId: id,
+        conversationId,
+        hostId,
+        roomName,
+        mode,
+        startedAt: createdAt.toISOString(),
+      },
+    });
+
+    if (firstInviteeId) {
+      await this.redis.publish(
+        `ws:signal:${firstInviteeId}`,
+        JSON.stringify({
+          type: 'call.ringing',
+          payload: {
+            callId: id,
+            callerId: hostId,
+            conversationId,
+            roomName,
+            startedAt: createdAt.toISOString(),
+            mode,
+            isGroup: true,
+          },
+        })
+      );
+
+      await this.redis.publish(
+        `ws:signal:${hostId}`,
+        JSON.stringify({
+          type: 'call.dialing',
+          payload: {
+            callId: id,
+            conversationId,
+            calleeId: firstInviteeId,
+            mode,
+            isGroup: true,
+          },
+        })
+      );
+    }
+
+    return {
+      call,
+      token: hostToken,
+      hostToken,
+      livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
+      roomName,
+    };
+  }
+
+  async joinCall(
+    callId: string,
+    userId: string
+  ): Promise<{
+    token: string;
+    livekitUrl: string;
+    roomName: string;
+    call: Call;
+  }> {
+    const call = await this.callsRepo.getById(callId);
+    if (!call) {
+      throw new NotFoundError('call_not_found', 'Call not found');
+    }
+    if (!call.conversationId) {
+      throw new BadRequestError('not_group_call', 'Call is not a group call');
+    }
+
+    if (call.state !== 'ringing' && call.state !== 'accepted') {
+      throw new ConflictError(
+        'invalid_state_transition',
+        `Cannot join call in state '${call.state}'`
+      );
+    }
+
+    const membership = await this.checkConversationMembership(call.conversationId, userId);
+    if (!membership.isMember) {
+      throw new ForbiddenError('not_member', 'User is not a member of this conversation');
+    }
+
+    const isAlreadyParticipant = await this.callParticipantsRepo.isParticipant(callId, userId);
+
+    if (!isAlreadyParticipant) {
+      const activeCount = await this.callParticipantsRepo.countActive(callId);
+      if (activeCount >= this.config.MAX_GROUP_CALL_PARTICIPANTS) {
+        throw new AppError(429, 'call_full', 'Call is full');
+      }
+
+      const joinedAt = new Date();
+      await this.callParticipantsRepo.add(callId, userId, joinedAt);
+
+      if (call.state === 'ringing') {
+        await this.callsRepo.updateState(callId, {
+          state: 'accepted',
+          acceptedAt: joinedAt,
+        });
+        call.state = 'accepted';
+        call.acceptedAt = joinedAt;
+      }
+
+      await this.eventsPublisher.publish({
+        type: 'voice.call.participant_joined',
+        payload: {
+          callId,
+          conversationId: call.conversationId,
+          userId,
+          at: joinedAt.toISOString(),
+        },
+      });
+
+      const activeParticipants = await this.callParticipantsRepo.listActive(callId);
+      await this.redis.publish(
+        `ws:conv:${call.conversationId}`,
+        JSON.stringify({
+          type: 'call.participant_joined',
+          payload: {
+            callId,
+            conversationId: call.conversationId,
+            userId,
+            joinedAt: joinedAt.toISOString(),
+            participantCount: activeParticipants.length,
+            participants: activeParticipants,
+          },
+        })
+      );
+    }
+
+    const mode = call.mode || 'audio';
+    const publishGrants =
+      mode === 'video'
+        ? ['microphone', 'camera', 'screen_share']
+        : ['microphone'];
+
+    const token = await this.livekit.makeAccessToken({
+      identity: userId,
+      room: call.roomName,
+      ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
+      grants: {
+        roomJoin: true,
+        canPublish: publishGrants,
+        canSubscribe: true,
+        room: call.roomName,
+      },
+    });
+
+    return {
+      token,
+      livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
+      roomName: call.roomName,
+      call,
+    };
+  }
+
+  async leaveCall(
+    callId: string,
+    userId: string
+  ): Promise<{ ok: boolean; remainingCount: number }> {
+    const call = await this.callsRepo.getById(callId);
+    if (!call) {
+      throw new NotFoundError('call_not_found', 'Call not found');
+    }
+    if (!call.conversationId) {
+      throw new BadRequestError('not_group_call', 'Call is not a group call');
+    }
+
+    const isParticipant = await this.callParticipantsRepo.isParticipant(callId, userId);
+    if (!isParticipant) {
+      throw new ForbiddenError('not_participant', 'User is not a participant in this call');
+    }
+
+    const leftAt = new Date();
+    await this.callParticipantsRepo.remove(callId, userId, leftAt);
+
+    await this.eventsPublisher.publish({
+      type: 'voice.call.participant_left',
+      payload: {
+        callId,
+        conversationId: call.conversationId,
+        userId,
+        at: leftAt.toISOString(),
+      },
+    });
+
+    const remaining = await this.callParticipantsRepo.listActive(callId);
+
+    if (remaining.length === 0) {
+      await this.callsRepo.updateState(callId, {
+        state: 'ended',
+        endedAt: leftAt,
+        endedBy: userId,
+        endReason: 'all_left',
+      });
+
+      try {
+        await this.livekit.roomService?.deleteRoom(call.roomName);
+      } catch {
+        // ignore
+      }
+
+      await this.eventsPublisher.publish({
+        type: 'voice.call.ended',
+        payload: {
+          callId,
+          conversationId: call.conversationId,
+          callerId: call.callerId,
+          calleeId: call.calleeId,
+          endedBy: userId,
+          reason: 'all_left',
+          at: leftAt.toISOString(),
+        },
+      });
+
+      await this.redis.publish(
+        `ws:conv:${call.conversationId}`,
+        JSON.stringify({
+          type: 'call.ended',
+          payload: {
+            callId,
+            conversationId: call.conversationId,
+            endedBy: userId,
+            reason: 'all_left',
+          },
+        })
+      );
+    } else {
+      await this.redis.publish(
+        `ws:conv:${call.conversationId}`,
+        JSON.stringify({
+          type: 'call.participant_left',
+          payload: {
+            callId,
+            conversationId: call.conversationId,
+            userId,
+            leftAt: leftAt.toISOString(),
+            participantCount: remaining.length,
+            participants: remaining,
+          },
+        })
+      );
+    }
+
+    return { ok: true, remainingCount: remaining.length };
+  }
+
+  async endGroupCall(
+    callId: string,
+    hostId: string
+  ): Promise<Call> {
+    const call = await this.callsRepo.getById(callId);
+    if (!call) {
+      throw new NotFoundError('call_not_found', 'Call not found');
+    }
+    if (!call.conversationId) {
+      throw new BadRequestError('not_group_call', 'Call is not a group call');
+    }
+
+    if (call.hostId !== hostId && call.callerId !== hostId) {
+      throw new ForbiddenError('not_host', 'Only the call host can end the call');
+    }
+
+    if (call.state !== 'ringing' && call.state !== 'accepted') {
+      throw new ConflictError(
+        'invalid_state_transition',
+        `Cannot end call in state '${call.state}'`
+      );
+    }
+
+    const endedAt = new Date();
+    await this.callsRepo.updateState(callId, {
+      state: 'ended',
+      endedAt,
+      endedBy: hostId,
+      endReason: 'host_ended',
+    });
+
+    const remaining = await this.callParticipantsRepo.listActive(callId);
+    for (const pId of remaining) {
+      await this.callParticipantsRepo.remove(callId, pId, endedAt);
+      await this.redis.publish(
+        `ws:signal:${pId}`,
+        JSON.stringify({
+          type: 'call.ended',
+          payload: {
+            callId,
+            conversationId: call.conversationId,
+            endedBy: hostId,
+            reason: 'host_ended',
+          },
+        })
+      );
+    }
+
+    try {
+      await this.livekit.roomService?.deleteRoom(call.roomName);
+    } catch {
+      // ignore
+    }
+
+    await this.eventsPublisher.publish({
+      type: 'voice.call.ended',
+      payload: {
+        callId,
+        conversationId: call.conversationId,
+        callerId: call.callerId,
+        calleeId: call.calleeId,
+        endedBy: hostId,
+        reason: 'host_ended',
+        at: endedAt.toISOString(),
+      },
+    });
+
+    await this.redis.publish(
+      `ws:conv:${call.conversationId}`,
+      JSON.stringify({
+        type: 'call.ended',
+        payload: {
+          callId,
+          conversationId: call.conversationId,
+          endedBy: hostId,
+          reason: 'host_ended',
+        },
+      })
+    );
+
+    return {
+      ...call,
+      state: 'ended',
+      endedAt,
+      endedBy: hostId,
+      endReason: 'host_ended',
+    };
+  }
+
+  async getConversationCall(
+    conversationId: string,
+    state?: string,
+    userId?: string
+  ): Promise<Call | null> {
+    if (userId) {
+      const membership = await this.checkConversationMembership(conversationId, userId);
+      if (!membership.isMember) {
+        throw new ForbiddenError('not_member', 'User is not a member of this conversation');
+      }
+    }
+    return this.callsRepo.findByConversation(conversationId, state);
   }
 
   async getActiveCall(userId: string): Promise<Call | null> {

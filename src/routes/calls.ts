@@ -16,6 +16,11 @@ const EndCallBodySchema = z.object({
   reason: z.string().max(80).default('hangup').optional(),
 });
 
+const StartGroupCallBodySchema = z.object({
+  firstInviteeId: z.string().regex(ID_REGEX, 'firstInviteeId must be a valid UUID or ObjectId').optional(),
+  mode: z.enum(['audio', 'video']).default('audio').optional(),
+});
+
 export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   // 1. POST /calls (10/min)
   app.post(
@@ -330,7 +335,7 @@ export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
   );
 
-  // 8. GET /calls?limit=30&before=<ISO> (60/min)
+  // 8. GET /calls?limit=30&before=<ISO> (60/min) or GET /calls?conversationId=...&state=...
   app.get(
     '/calls',
     {
@@ -342,22 +347,187 @@ export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         },
       },
       schema: {
-        description: 'List call history for calling user (caller or callee), sorted DESC by created_at',
+        description: 'List call history or get active call for a conversation',
         tags: ['Calls'],
         querystring: {
           type: 'object',
           properties: {
             limit: { type: 'integer', default: 30, minimum: 1, maximum: 100 },
             before: { type: 'string', format: 'date-time' },
+            conversationId: { type: 'string', format: 'uuid' },
+            state: { type: 'string' },
           },
         },
       },
     },
     async (req, reply) => {
       const userId = req.user!.userId;
-      const { limit = 30, before } = req.query as { limit?: number; before?: string };
+      const { limit = 30, before, conversationId, state } = req.query as {
+        limit?: number;
+        before?: string;
+        conversationId?: string;
+        state?: string;
+      };
+
+      if (conversationId) {
+        const call = await app.callsService.getConversationCall(conversationId, state, userId);
+        if (!call) {
+          return reply.status(204).send();
+        }
+        return reply.status(200).send(call);
+      }
 
       const result = await app.callsService.listHistory(userId, Number(limit), before);
+      return reply.status(200).send(result);
+    }
+  );
+
+  // 9. POST /conversations/:id/calls (10/min)
+  app.post(
+    '/conversations/:id/calls',
+    {
+      preHandler: app.authenticate,
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: 60000,
+        },
+      },
+      schema: {
+        description: 'Initiate a group voice or video call for a group conversation',
+        tags: ['Calls'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            firstInviteeId: { type: 'string', description: 'Optional peer user ID to ring first' },
+            mode: { type: 'string', enum: ['audio', 'video'], default: 'audio' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { id: conversationId } = req.params as { id: string };
+      const parsedBody = StartGroupCallBodySchema.safeParse(req.body || {});
+      if (!parsedBody.success) {
+        return reply.status(400).send({
+          error: {
+            code: 'invalid_payload',
+            message: parsedBody.error.issues[0]?.message || 'Invalid payload',
+          },
+        });
+      }
+      const hostId = req.user!.userId;
+      const { firstInviteeId, mode } = parsedBody.data;
+
+      const result = await app.callsService.startGroupCall(
+        hostId,
+        conversationId,
+        firstInviteeId,
+        mode || 'audio'
+      );
+      return reply.status(201).send(result);
+    }
+  );
+
+  // 10. POST /calls/:id/join (30/min)
+  app.post(
+    '/calls/:id/join',
+    {
+      preHandler: app.authenticate,
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: 60000,
+        },
+      },
+      schema: {
+        description: 'Join an active group call',
+        tags: ['Calls'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const userId = req.user!.userId;
+
+      const result = await app.callsService.joinCall(id, userId);
+      return reply.status(200).send(result);
+    }
+  );
+
+  // 11. POST /calls/:id/leave (30/min)
+  app.post(
+    '/calls/:id/leave',
+    {
+      preHandler: app.authenticate,
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: 60000,
+        },
+      },
+      schema: {
+        description: 'Leave an active group call',
+        tags: ['Calls'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const userId = req.user!.userId;
+
+      const result = await app.callsService.leaveCall(id, userId);
+      return reply.status(200).send(result);
+    }
+  );
+
+  // 12. DELETE /calls/:id (10/min)
+  app.delete(
+    '/calls/:id',
+    {
+      preHandler: app.authenticate,
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: 60000,
+        },
+      },
+      schema: {
+        description: 'Force-end a group call (host only)',
+        tags: ['Calls'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const userId = req.user!.userId;
+
+      const result = await app.callsService.endGroupCall(id, userId);
       return reply.status(200).send(result);
     }
   );
