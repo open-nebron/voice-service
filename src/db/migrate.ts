@@ -37,9 +37,17 @@ export async function runMigrations(
         ended_at        timestamp,
         ended_by        uuid,
         end_reason      text,
+        mode            text,
         PRIMARY KEY (id)
       )
     `);
+
+    // Add mode column if upgrading existing table
+    try {
+      await client.execute(`ALTER TABLE "${keyspace}".calls ADD mode text`);
+    } catch {
+      // Column may already exist
+    }
 
     // 3. Indexes
     await client.execute(`

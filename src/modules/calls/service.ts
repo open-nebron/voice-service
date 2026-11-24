@@ -106,7 +106,7 @@ export class CallsService {
     }
   }
 
-  async startCall(callerId: string, calleeId: string): Promise<Call> {
+  async startCall(callerId: string, calleeId: string, mode: 'audio' | 'video' = 'audio'): Promise<Call> {
     if (callerId === calleeId) {
       throw new BadRequestError('cannot_call_self', 'Cannot call yourself');
     }
@@ -146,6 +146,7 @@ export class CallsService {
       roomName,
       createdAt,
       state: 'ringing',
+      mode,
     });
 
     // 4. Publish voice.call.ringing to Redis Stream nebron.events
@@ -170,6 +171,7 @@ export class CallsService {
           callerId,
           roomName,
           startedAt: createdAt.toISOString(),
+          mode,
         },
       })
     );
@@ -181,6 +183,7 @@ export class CallsService {
         payload: {
           callId: id,
           calleeId,
+          mode,
         },
       })
     );
@@ -223,6 +226,12 @@ export class CallsService {
     });
 
     // Generate LiveKit tokens for BOTH caller and callee
+    const mode = call.mode || 'audio';
+    const publishGrants =
+      mode === 'video'
+        ? ['microphone', 'camera', 'screen_share']
+        : ['microphone'];
+
     let callerToken: string;
     let calleeToken: string;
     try {
@@ -232,7 +241,7 @@ export class CallsService {
         ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
         grants: {
           roomJoin: true,
-          canPublish: true,
+          canPublish: publishGrants,
           canSubscribe: true,
           room: call.roomName,
         },
@@ -244,7 +253,7 @@ export class CallsService {
         ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
         grants: {
           roomJoin: true,
-          canPublish: true,
+          canPublish: publishGrants,
           canSubscribe: true,
           room: call.roomName,
         },
@@ -313,6 +322,7 @@ export class CallsService {
           callerToken,
           livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
           roomName: call.roomName,
+          mode,
         },
       })
     );
@@ -326,6 +336,7 @@ export class CallsService {
           calleeToken,
           livekitUrl: this.config.LIVEKIT_PUBLIC_URL,
           roomName: call.roomName,
+          mode,
         },
       })
     );
@@ -605,13 +616,19 @@ export class CallsService {
     }
 
     try {
+      const mode = call.mode || 'audio';
+      const publishGrants =
+        mode === 'video'
+          ? ['microphone', 'camera', 'screen_share']
+          : ['microphone'];
+
       const token = await this.livekit.makeAccessToken({
         identity: userId,
         room: call.roomName,
         ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
         grants: {
           roomJoin: true,
-          canPublish: true,
+          canPublish: publishGrants,
           canSubscribe: true,
           room: call.roomName,
         },

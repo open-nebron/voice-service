@@ -14,6 +14,7 @@ export interface Call {
   endedAt?: Date | null;
   endedBy?: string | null;
   endReason?: CallEndReason | string | null;
+  mode?: 'audio' | 'video' | null;
 }
 
 export interface InsertCallParams {
@@ -23,6 +24,7 @@ export interface InsertCallParams {
   roomName: string;
   createdAt: Date;
   state?: CallState;
+  mode?: 'audio' | 'video';
 }
 
 export interface UpdateCallStateParams {
@@ -53,14 +55,16 @@ export class CallsRepository {
       endedAt: row.ended_at || null,
       endedBy: row.ended_by ? fromCassandraUuid(row.ended_by) : null,
       endReason: row.end_reason || null,
+      mode: (row.mode as 'audio' | 'video') || 'audio',
     };
   }
 
   async insert(params: InsertCallParams): Promise<Call> {
     const state = params.state || 'ringing';
+    const mode = params.mode || 'audio';
     const query = `
-      INSERT INTO calls (id, caller_id, callee_id, state, room_name, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO calls (id, caller_id, callee_id, state, room_name, created_at, mode)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
     await this.client.execute(
       query,
@@ -71,6 +75,7 @@ export class CallsRepository {
         state,
         params.roomName,
         params.createdAt,
+        mode,
       ],
       { prepare: true }
     );
@@ -86,6 +91,7 @@ export class CallsRepository {
       endedAt: null,
       endedBy: null,
       endReason: null,
+      mode,
     };
   }
 

@@ -548,7 +548,12 @@ components:
           $ref: '#/components/schemas/CallState'
         roomName:
           type: string
-          description: LiveKit room name (corresponds to call id)
+          description: LiveKit room name
+        mode:
+          type: string
+          enum: [audio, video]
+          default: audio
+          description: Call mode (audio or video) (corresponds to call id)
         createdAt:
           type: string
           format: date-time
@@ -578,6 +583,11 @@ components:
           type: string
           format: uuid
           description: User ID of the person to call
+        mode:
+          type: string
+          enum: [audio, video]
+          default: audio
+          description: Call mode (audio or video)
 
     AcceptCallResponse:
       type: object

@@ -5,6 +5,7 @@ const ID_REGEX = /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 
 const StartCallBodySchema = z.object({
   calleeId: z.string().regex(ID_REGEX, 'calleeId must be a valid UUID or ObjectId'),
+  mode: z.enum(['audio', 'video']).default('audio').optional(),
 });
 
 const RejectCallBodySchema = z.object({
@@ -38,6 +39,12 @@ export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
               type: 'string',
               description: 'Target peer user ID to call',
             },
+            mode: {
+              type: 'string',
+              enum: ['audio', 'video'],
+              default: 'audio',
+              description: 'Call mode (audio or video)',
+            },
           },
         },
         response: {
@@ -50,8 +57,9 @@ export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
               state: { type: 'string' },
               roomName: { type: 'string' },
               createdAt: { type: 'string' },
+              mode: { type: 'string' },
             },
-            required: ['id', 'callerId', 'calleeId', 'state', 'roomName', 'createdAt'],
+            required: ['id', 'callerId', 'calleeId', 'state', 'roomName', 'createdAt', 'mode'],
           },
         },
       },
@@ -68,9 +76,9 @@ export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       }
 
       const callerId = req.user!.userId;
-      const { calleeId } = parsedBody.data;
+      const { calleeId, mode } = parsedBody.data;
 
-      const call = await app.callsService.startCall(callerId, calleeId);
+      const call = await app.callsService.startCall(callerId, calleeId, mode || 'audio');
       return reply.status(201).send({
         id: call.id,
         callerId: call.callerId,
@@ -78,6 +86,7 @@ export const callsRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         state: call.state,
         roomName: call.roomName,
         createdAt: call.createdAt ? new Date(call.createdAt).toISOString() : new Date().toISOString(),
+        mode: call.mode || 'audio',
       });
     }
   );
