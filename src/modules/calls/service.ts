@@ -14,6 +14,7 @@ import {
   NotFoundError,
   ConflictError,
 } from '../../lib/errors.js';
+import { capture } from '../../lib/analytics.js';
 
 export class CallsService {
   private readonly callsRepo: CallsRepository;
@@ -237,6 +238,8 @@ export class CallsService {
       })
     );
 
+    capture(callerId, 'call_started', { callId: id, callType: mode });
+
     return call;
   }
 
@@ -424,6 +427,8 @@ export class CallsService {
       acceptedAt,
     };
 
+    capture(userId, 'call_accepted', { callId });
+
     return {
       call: updatedCall,
       callerToken,
@@ -486,6 +491,8 @@ export class CallsService {
         },
       })
     );
+
+    capture(userId, 'call_rejected', { callId, reason });
 
     return {
       ...call,
@@ -636,6 +643,10 @@ export class CallsService {
         at: endedAt.toISOString(),
       },
     });
+
+    const startMs = (call.acceptedAt || call.createdAt).getTime();
+    const duration = Math.max(0, Math.round((endedAt.getTime() - startMs) / 1000));
+    capture(userId, 'call_ended', { callId, duration, reason });
 
     return {
       ...call,
@@ -897,6 +908,8 @@ export class CallsService {
         })
       );
     }
+
+    capture(hostId, 'group_call_started', { callId: id, roomName });
 
     return {
       call,

@@ -234,7 +234,9 @@ describe('Group calls (voice-service)', () => {
 
     const wsMsg = await tracker.waitForSignal(
       `ws:conv:${convId}`,
-      'call.participant_joined'
+      'call.participant_joined',
+      4000,
+      (data) => data.payload?.participantCount !== undefined
     );
     expect(wsMsg.payload.callId).toBe(callId);
     expect(wsMsg.payload.participantCount).toBe(2);
@@ -362,7 +364,9 @@ describe('Group calls (voice-service)', () => {
 
     const leaveWs = await tracker.waitForSignal(
       `ws:conv:${convId}`,
-      'call.participant_left'
+      'call.participant_left',
+      4000,
+      (data) => data.payload?.participantCount !== undefined
     );
     expect(leaveWs.payload.participantCount).toBe(1);
 

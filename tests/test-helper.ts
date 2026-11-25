@@ -298,10 +298,11 @@ export class SignalTracker {
   async waitForSignal(
     channel: string,
     type?: string,
-    timeoutMs = 4000
+    timeoutMs = 4000,
+    filter?: (data: any) => boolean
   ): Promise<any> {
     const pred = (ch: string, data: any) =>
-      ch === channel && (!type || data.type === type);
+      ch === channel && (!type || data.type === type) && (!filter || filter(data));
     const existingIdx = this.messages.findIndex((m) => pred(m.channel, m.data));
     if (existingIdx !== -1) {
       return this.messages.splice(existingIdx, 1)[0].data;
