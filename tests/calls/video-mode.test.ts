@@ -86,11 +86,13 @@ describe('Video Calls and LiveKit Grants (mode: audio | video)', () => {
     const callerClaims = await verifyLiveKitToken(callerToken);
     const calleeClaims = await verifyLiveKitToken(calleeToken);
 
-    expect(callerClaims.video?.canPublish).toEqual(['microphone']);
+    expect(callerClaims.video?.canPublish).toBe(true);
+    expect(callerClaims.video?.canPublishSources).toEqual(['microphone']);
     expect(callerClaims.video?.canSubscribe).toBe(true);
     expect(callerClaims.video?.roomJoin).toBe(true);
 
-    expect(calleeClaims.video?.canPublish).toEqual(['microphone']);
+    expect(calleeClaims.video?.canPublish).toBe(true);
+    expect(calleeClaims.video?.canPublishSources).toEqual(['microphone']);
     expect(calleeClaims.video?.canSubscribe).toBe(true);
     expect(calleeClaims.video?.roomJoin).toBe(true);
   });
@@ -102,11 +104,13 @@ describe('Video Calls and LiveKit Grants (mode: audio | video)', () => {
     const callerClaims = await verifyLiveKitToken(callerToken);
     const calleeClaims = await verifyLiveKitToken(calleeToken);
 
-    expect(callerClaims.video?.canPublish).toEqual(['microphone', 'camera', 'screen_share']);
+    expect(callerClaims.video?.canPublish).toBe(true);
+    expect(callerClaims.video?.canPublishSources).toEqual(['microphone', 'camera', 'screen_share']);
     expect(callerClaims.video?.canSubscribe).toBe(true);
     expect(callerClaims.video?.roomJoin).toBe(true);
 
-    expect(calleeClaims.video?.canPublish).toEqual(['microphone', 'camera', 'screen_share']);
+    expect(calleeClaims.video?.canPublish).toBe(true);
+    expect(calleeClaims.video?.canPublishSources).toEqual(['microphone', 'camera', 'screen_share']);
     expect(calleeClaims.video?.canSubscribe).toBe(true);
     expect(calleeClaims.video?.roomJoin).toBe(true);
   });
@@ -123,7 +127,8 @@ describe('Video Calls and LiveKit Grants (mode: audio | video)', () => {
     expect(audioRefreshRes.statusCode).toBe(200);
     const audioRefreshData = audioRefreshRes.json();
     const audioRefreshClaims = await verifyLiveKitToken(audioRefreshData.token);
-    expect(audioRefreshClaims.video?.canPublish).toEqual(['microphone']);
+    expect(audioRefreshClaims.video?.canPublish).toBe(true);
+    expect(audioRefreshClaims.video?.canPublishSources).toEqual(['microphone']);
 
     // 3b. Video call refresh
     const videoCall = await initiateAndAcceptCall('video');
@@ -135,7 +140,8 @@ describe('Video Calls and LiveKit Grants (mode: audio | video)', () => {
     expect(videoRefreshRes.statusCode).toBe(200);
     const videoRefreshData = videoRefreshRes.json();
     const videoRefreshClaims = await verifyLiveKitToken(videoRefreshData.token);
-    expect(videoRefreshClaims.video?.canPublish).toEqual(['microphone', 'camera', 'screen_share']);
+    expect(videoRefreshClaims.video?.canPublish).toBe(true);
+    expect(videoRefreshClaims.video?.canPublishSources).toEqual(['microphone', 'camera', 'screen_share']);
   });
 
   // 4. Screen share works mid-video-call (via grants, verified by token decode)
@@ -146,8 +152,8 @@ describe('Video Calls and LiveKit Grants (mode: audio | video)', () => {
     const callerClaims = await verifyLiveKitToken(videoCall.callerToken);
     const calleeClaims = await verifyLiveKitToken(videoCall.calleeToken);
 
-    const callerPublishList = (callerClaims.video?.canPublish as string[]) || [];
-    const calleePublishList = (calleeClaims.video?.canPublish as string[]) || [];
+    const callerPublishList = (callerClaims.video?.canPublishSources as string[]) || [];
+    const calleePublishList = (calleeClaims.video?.canPublishSources as string[]) || [];
 
     expect(callerPublishList).toContain('screen_share');
     expect(callerPublishList).toContain('camera');

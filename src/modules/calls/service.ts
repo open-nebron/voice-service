@@ -1,5 +1,6 @@
 import type { Redis } from 'ioredis';
 import crypto from 'node:crypto';
+import { TrackSource } from 'livekit-server-sdk';
 import type { Config } from '../../config.js';
 import type { CallsRepository, Call } from '../../db/repositories/calls.js';
 import type { CallParticipantsRepository } from '../../db/repositories/call-participants.js';
@@ -266,10 +267,10 @@ export class CallsService {
 
     // Generate LiveKit tokens for BOTH caller and callee
     const mode = call.mode || 'audio';
-    const publishGrants =
+    const publishSources =
       mode === 'video'
-        ? ['microphone', 'camera', 'screen_share']
-        : ['microphone'];
+        ? [TrackSource.MICROPHONE, TrackSource.CAMERA, TrackSource.SCREEN_SHARE]
+        : [TrackSource.MICROPHONE];
 
     let callerToken: string;
     let calleeToken: string;
@@ -280,7 +281,8 @@ export class CallsService {
         ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
         grants: {
           roomJoin: true,
-          canPublish: publishGrants,
+          canPublish: true,
+          canPublishSources: publishSources,
           canSubscribe: true,
           room: call.roomName,
         },
@@ -292,7 +294,8 @@ export class CallsService {
         ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
         grants: {
           roomJoin: true,
-          canPublish: publishGrants,
+          canPublish: true,
+          canPublishSources: publishSources,
           canSubscribe: true,
           room: call.roomName,
         },
@@ -705,10 +708,10 @@ export class CallsService {
 
     try {
       const mode = call.mode || 'audio';
-      const publishGrants =
+      const publishSources =
         mode === 'video'
-          ? ['microphone', 'camera', 'screen_share']
-          : ['microphone'];
+          ? [TrackSource.MICROPHONE, TrackSource.CAMERA, TrackSource.SCREEN_SHARE]
+          : [TrackSource.MICROPHONE];
 
       const token = await this.livekit.makeAccessToken({
         identity: userId,
@@ -716,7 +719,8 @@ export class CallsService {
         ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
         grants: {
           roomJoin: true,
-          canPublish: publishGrants,
+          canPublish: true,
+          canPublishSources: publishSources,
           canSubscribe: true,
           room: call.roomName,
         },
@@ -814,10 +818,10 @@ export class CallsService {
 
     await this.callParticipantsRepo.add(id, hostId, createdAt);
 
-    const publishGrants =
+    const publishSources =
       mode === 'video'
-        ? ['microphone', 'camera', 'screen_share']
-        : ['microphone'];
+        ? [TrackSource.MICROPHONE, TrackSource.CAMERA, TrackSource.SCREEN_SHARE]
+        : [TrackSource.MICROPHONE];
 
     const hostToken = await this.livekit.makeAccessToken({
       identity: hostId,
@@ -825,7 +829,8 @@ export class CallsService {
       ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
       grants: {
         roomJoin: true,
-        canPublish: publishGrants,
+        canPublish: true,
+        canPublishSources: publishSources,
         canSubscribe: true,
         room: roomName,
       },
@@ -961,10 +966,10 @@ export class CallsService {
     }
 
     const mode = call.mode || 'audio';
-    const publishGrants =
+    const publishSources =
       mode === 'video'
-        ? ['microphone', 'camera', 'screen_share']
-        : ['microphone'];
+        ? [TrackSource.MICROPHONE, TrackSource.CAMERA, TrackSource.SCREEN_SHARE]
+        : [TrackSource.MICROPHONE];
 
     const token = await this.livekit.makeAccessToken({
       identity: userId,
@@ -972,7 +977,8 @@ export class CallsService {
       ttl: this.config.LIVEKIT_TOKEN_TTL_SECONDS,
       grants: {
         roomJoin: true,
-        canPublish: publishGrants,
+        canPublish: true,
+        canPublishSources: publishSources,
         canSubscribe: true,
         room: call.roomName,
       },
