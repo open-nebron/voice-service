@@ -189,6 +189,15 @@ export class CallsService {
       mode,
     });
 
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const key = `stats:calls:${today}`;
+      await this.redis.incr(key);
+      await this.redis.expire(key, 86400 * 7);
+    } catch {
+      // Ignore
+    }
+
     // 4. Publish voice.call.ringing to Redis Stream nebron.events
     await this.eventsPublisher.publish({
       type: 'voice.call.ringing',
@@ -806,6 +815,15 @@ export class CallsService {
       conversationId,
       hostId,
     });
+
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const key = `stats:calls:${today}`;
+      await this.redis.incr(key);
+      await this.redis.expire(key, 86400 * 7);
+    } catch {
+      // Ignore
+    }
 
     if (state === 'accepted') {
       await this.callsRepo.updateState(id, {

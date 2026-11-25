@@ -16,6 +16,7 @@ import { CallTimeoutJob } from './jobs/call-timeout.js';
 import { CallReconcileJob } from './jobs/call-reconcile.js';
 import { healthRoutes } from './routes/health.js';
 import { callsRoutes } from './routes/calls.js';
+import { internalRoutes } from './routes/internal.js';
 import { webhooksRoutes } from './routes/webhooks.js';
 import { debugRoutes } from './routes/debug.js';
 import { AppError } from './lib/errors.js';
@@ -210,6 +211,7 @@ export async function buildApp(
   await app.register(webhooksRoutes, { receiver: options.webhookReceiver });
   await app.register(debugRoutes);
   await app.register(callsRoutes);
+  await app.register(internalRoutes);
 
   return app;
 }

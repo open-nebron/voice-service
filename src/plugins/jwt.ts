@@ -6,6 +6,7 @@ import {
 import fp from 'fastify-plugin';
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { type Config, config as defaultConfig } from '../config.js';
+import { checkUserBanned } from '../lib/ban-check.js';
 
 export interface DecodedToken {
   sub: string;
@@ -139,6 +140,22 @@ const plugin: FastifyPluginAsync<JwtPluginOptions> = async (
         error: {
           code: 'invalid_token',
           message: err.message || 'Token verification failed',
+        },
+      });
+    }
+
+    const banStatus = await checkUserBanned(
+      fastify.redis,
+      cfg.CORE_URL,
+      cfg.INTERNAL_TOKEN,
+      req.user.userId
+    );
+    if (banStatus.banned) {
+      return reply.status(403).send({
+        error: {
+          code: 'account_banned',
+          message: 'Account is banned',
+          reason: banStatus.reason || undefined,
         },
       });
     }
