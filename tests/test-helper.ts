@@ -439,6 +439,7 @@ export async function createRealTestApp(
     LIVEKIT_API_KEY: 'test-api-key',
     LIVEKIT_API_SECRET: 'test-api-secret',
     CORE_URL: 'http://127.0.0.1:4002',
+    SPACES_URL: 'http://127.0.0.1:4005',
     INTERNAL_TOKEN: 'test-internal-token',
     EVENTS_STREAM: 'nebron.events',
     CALL_RING_TIMEOUT_SECONDS: 45,
