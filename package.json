@@ -16,7 +16,7 @@
     "@fastify/rate-limit": "^9.1.0",
     "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^3.1.0",
-    "@nebron/contracts": "file:vendor/nebron-contracts-1.8.0.tgz",
+    "@nebron/contracts": "file:vendor/nebron-contracts-1.9.0.tgz",
     "@nebron/permissions": "file:vendor/nebron-permissions-1.0.0.tgz",
     "cassandra-driver": "^4.10.0",
     "dotenv": "^16.4.7",
