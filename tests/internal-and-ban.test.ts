@@ -87,4 +87,55 @@ describe('Voice Service Internal Stats & Ban Enforcement', () => {
     expect(body.error.code).toBe('account_banned');
     expect(body.error.reason).toBe('Abusive language');
   });
+
+  it('GET /internal/analytics/calls aggregates call counts, duration, and mode without PII', async () => {
+    const c1 = crypto.randomUUID();
+    const c2 = crypto.randomUUID();
+    const now = new Date();
+    const acceptedAt = new Date(now.getTime() - 120_000);
+    const endedAt = new Date(now.getTime());
+
+    await app.callsRepo.insert({
+      id: c1,
+      callerId: crypto.randomUUID(),
+      calleeId: crypto.randomUUID(),
+      roomName: c1,
+      createdAt: acceptedAt,
+      state: 'accepted',
+      mode: 'video',
+    });
+    await app.callsRepo.updateState(c1, { state: 'ended', acceptedAt, endedAt, endReason: 'hangup' });
+
+    await app.callsRepo.insert({
+      id: c2,
+      callerId: crypto.randomUUID(),
+      calleeId: crypto.randomUUID(),
+      roomName: c2,
+      createdAt: now,
+      state: 'ringing',
+      mode: 'audio',
+    });
+
+    const forbidden = await app.inject({
+      method: 'GET',
+      url: '/internal/analytics/calls',
+    });
+    expect(forbidden.statusCode).toBe(403);
+
+    const since = new Date(now.getTime() - 86_400_000).toISOString();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/internal/analytics/calls?since=${encodeURIComponent(since)}`,
+      headers: { 'x-internal-token': 'test-internal-token' },
+    });
+    expect(res.statusCode).toBe(200);
+    const stats = res.json();
+    expect(stats.totalCalls).toBeGreaterThanOrEqual(2);
+    expect(stats.byType.video).toBeGreaterThanOrEqual(1);
+    expect(stats.byType.audio).toBeGreaterThanOrEqual(1);
+    expect(stats.avgDurationSeconds).toBeGreaterThan(0);
+    expect(stats.totalMinutes).toBeGreaterThan(0);
+    expect(Array.isArray(stats.durationHistogram)).toBe(true);
+    expect(stats.durationHistogram.some((b: any) => b.bucket === '1-5m' && b.count >= 1)).toBe(true);
+  });
 });

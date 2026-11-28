@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { RoomServiceClient, WebhookEvent } from 'livekit-server-sdk';
 import type { CallsRepository } from '../../db/repositories/calls.js';
 import type { EventsPublisher } from '../events/publisher.js';
+import { decrementLiveActiveCalls } from '../../lib/live-call-stats.js';
 
 export async function handleRoomStarted(
   event: WebhookEvent,
@@ -46,6 +47,9 @@ export async function handleRoomFinished(
       endedBy: null,
       endReason: 'livekit_closed',
     });
+    if (call.state === 'accepted') {
+      await decrementLiveActiveCalls(redis);
+    }
 
     await redis.publish(
       `ws:signal:${call.callerId}`,
@@ -130,6 +134,10 @@ export async function handleParticipantLeft(
       endedBy: null,
       endReason: 'livekit_closed',
     });
+    await decrementLiveActiveCalls(redis);
+    if (call.state === 'accepted') {
+      await decrementLiveActiveCalls(redis);
+    }
 
     await redis.publish(
       `ws:signal:${call.callerId}`,

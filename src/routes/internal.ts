@@ -32,6 +32,106 @@ export const internalRoutes: FastifyPluginAsync = async (fastify) => {
     });
   });
 
+  fastify.get('/internal/analytics/calls', async (request, reply) => {
+    const query = (request.query as { since?: string; until?: string }) || {};
+    const now = new Date();
+    const parseBoundary = (raw: string | undefined, fallback: Date, endOfDay: boolean): Date => {
+      if (!raw) return fallback;
+      const trimmed = raw.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        const d = new Date(`${trimmed}T00:00:00.000Z`);
+        return endOfDay ? new Date(d.getTime() + 86_400_000) : d;
+      }
+      const parsed = new Date(trimmed);
+      return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+    };
+
+    const since = parseBoundary(query.since, new Date(now.getTime() - 30 * 86_400_000), false);
+    const until = parseBoundary(query.until, new Date(now.getTime() + 1000), true);
+
+    const res = await fastify.scylla.execute(
+      'SELECT id, caller_id, callee_id, state, mode, created_at, accepted_at, ended_at FROM calls'
+    );
+
+    let totalCalls = 0;
+    let completedCalls = 0;
+    let totalDurationSeconds = 0;
+    let durationCount = 0;
+    let audio = 0;
+    let video = 0;
+    const uniqueUsers = new Set<string>();
+    const dailyMap = new Map<string, { callsMade: number; seconds: number }>();
+    const histCounts = {
+      '<1m': 0,
+      '1-5m': 0,
+      '5-15m': 0,
+      '15-30m': 0,
+      '30m+': 0,
+    };
+
+    for (const row of res.rows) {
+      const createdAt =
+        row.created_at instanceof Date ? row.created_at : new Date(row.created_at);
+      if (Number.isNaN(createdAt.getTime())) continue;
+      if (createdAt < since || createdAt >= until) continue;
+
+      totalCalls++;
+      if (row.mode === 'video') video++;
+      else audio++;
+
+      if (row.caller_id) uniqueUsers.add(row.caller_id.toString());
+      if (row.callee_id) uniqueUsers.add(row.callee_id.toString());
+
+      let callSec = 0;
+      if (row.accepted_at && row.ended_at) {
+        const acc = row.accepted_at instanceof Date ? row.accepted_at : new Date(row.accepted_at);
+        const end = row.ended_at instanceof Date ? row.ended_at : new Date(row.ended_at);
+        if (!Number.isNaN(acc.getTime()) && !Number.isNaN(end.getTime())) {
+          callSec = Math.max(0, (end.getTime() - acc.getTime()) / 1000);
+          totalDurationSeconds += callSec;
+          durationCount++;
+          completedCalls++;
+          if (callSec < 60) histCounts['<1m']++;
+          else if (callSec < 300) histCounts['1-5m']++;
+          else if (callSec < 900) histCounts['5-15m']++;
+          else if (callSec < 1800) histCounts['15-30m']++;
+          else histCounts['30m+']++;
+        }
+      }
+
+      const dk = createdAt.toISOString().slice(0, 10);
+      const dayEntry = dailyMap.get(dk) ?? { callsMade: 0, seconds: 0 };
+      dayEntry.callsMade++;
+      dayEntry.seconds += callSec;
+      dailyMap.set(dk, dayEntry);
+    }
+
+    const avgDurationSeconds =
+      durationCount > 0 ? Number((totalDurationSeconds / durationCount).toFixed(2)) : 0;
+    const totalMinutes = Number((totalDurationSeconds / 60).toFixed(2));
+    const daily = Array.from(dailyMap.entries())
+      .map(([date, d]) => ({
+        date,
+        callsMade: d.callsMade,
+        callMinutes: Number((d.seconds / 60).toFixed(2)),
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const durationHistogram = Object.entries(histCounts).map(([bucket, count]) => ({ bucket, count }));
+
+    return reply.status(200).send({
+      since: since.toISOString(),
+      until: until.toISOString(),
+      totalCalls,
+      completedCalls,
+      avgDurationSeconds,
+      totalMinutes,
+      byType: { audio, video },
+      uniqueUsersCount: uniqueUsers.size,
+      daily,
+      durationHistogram,
+    });
+  });
+
   fastify.post<{ Params: { spaceId: string; chId: string }; Body: { userId: string } }>(
     '/internal/spaces/:spaceId/channels/:chId/join',
     async (request, reply) => {

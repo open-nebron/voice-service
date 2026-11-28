@@ -15,6 +15,7 @@ import {
   ConflictError,
 } from '../../lib/errors.js';
 import { capture } from '../../lib/analytics.js';
+import { decrementLiveActiveCalls, incrementLiveActiveCalls } from '../../lib/live-call-stats.js';
 
 export class CallsService {
   private readonly callsRepo: CallsRepository;
@@ -276,6 +277,7 @@ export class CallsService {
       state: 'accepted',
       acceptedAt,
     });
+    await incrementLiveActiveCalls(this.redis);
 
     // Generate LiveKit tokens for BOTH caller and callee
     const mode = call.mode || 'audio';
@@ -320,6 +322,7 @@ export class CallsService {
         endedBy: null,
         endReason: 'error',
       });
+      await decrementLiveActiveCalls(this.redis);
 
       await this.redis.publish(
         `ws:signal:${call.callerId}`,
@@ -612,6 +615,7 @@ export class CallsService {
       endedBy: userId,
       endReason: reason,
     });
+    await decrementLiveActiveCalls(this.redis);
 
     const otherParty = userId === call.callerId ? call.calleeId : call.callerId;
     await this.redis.publish(
@@ -843,6 +847,7 @@ export class CallsService {
       });
       call.state = 'accepted';
       call.acceptedAt = createdAt;
+      await incrementLiveActiveCalls(this.redis);
     }
 
     await this.callParticipantsRepo.add(id, hostId, createdAt);
@@ -967,6 +972,7 @@ export class CallsService {
         });
         call.state = 'accepted';
         call.acceptedAt = joinedAt;
+        await incrementLiveActiveCalls(this.redis);
       }
 
       await this.eventsPublisher.publish({
@@ -1062,6 +1068,9 @@ export class CallsService {
         endedBy: userId,
         endReason: 'all_left',
       });
+      if (call.state === 'accepted') {
+        await decrementLiveActiveCalls(this.redis);
+      }
 
       try {
         await this.livekit.roomService?.deleteRoom(call.roomName);
